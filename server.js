@@ -243,7 +243,8 @@ app.patch('/api/menu/:id/stock', (req, res) => {
   });
 });
 
-// ── Health check ───────────────────────────────────────────
+// ── Root & Health check ───────────────────────────────────────────
+app.get('/', (req, res) => res.send('<h1>QuickCanteen Backend API is running! 🚀</h1><p>Please visit <a href="http://localhost:3000">http://localhost:3000</a> for the frontend.</p>'));
 app.get('/api/health', (_req, res) => res.json({ status:'ok', time: new Date().toISOString() }));
 
 const PORT = process.env.PORT || 5000;

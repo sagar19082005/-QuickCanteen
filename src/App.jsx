@@ -187,8 +187,8 @@ const STATUS_META = {
   CANCELLED: { label:"Cancelled", cls:"badge-cancelled", icon:"✖" },
 };
 
-let ORDER_ID = 1001;
-const genId = () => ORDER_ID++;
+// Use random IDs to prevent PostgreSQL duplicate constraint failures on tab realoads
+const genId = () => Math.floor(Math.random() * 900000) + 100000;
 const now = () => new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
 const today = () => new Date().toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"});
 
@@ -248,7 +248,8 @@ function Field({ label, fieldKey, type="text", placeholder, icon, value, onChang
 }
 
 // ─── USER STORE (in-memory "database") ────────────────────
-const API = "http://localhost:5000";
+// Dynamically connect to the backend regardless of which IP address the user connects from on the local network
+const API = `http://${window.location.hostname}:5000`;
 
 const USER_DB = [
   { name:"Rahul Vasant Pujar", email:"rahulpujar1908@gmail.com", password:"mental@1908",  phone:"9000000001", role:"admin"   },
@@ -258,7 +259,7 @@ const USER_DB = [
 
 // ─── AUTH SCREENS ──────────────────────────────────────────
 function AuthScreen({ onLogin }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("register");
   const [role, setRole] = useState("student");
   const [form, setForm] = useState({ name:"", email:"", password:"", confirm:"", phone:"" });
   const [errors, setErrors] = useState({});
@@ -310,8 +311,13 @@ function AuthScreen({ onLogin }) {
         const data = await res.json();
         if (data.success) {
           const u = { name:form.name.trim(), email:form.email.toLowerCase(), role, phone:form.phone };
-          setSuccess("Account created! Signing you in…");
-          setTimeout(()=>onLogin(u), 900);
+          setSuccess("Account created! Redirecting to sign in…");
+          setTimeout(() => {
+            setMode("login");
+            setErrors({});
+            setSuccess("");
+            setForm(f => ({ ...f, password: "", confirm: "" }));
+          }, 1500);
         } else {
           setErrors({ email: data.error || "Registration failed" });
         }
@@ -320,8 +326,13 @@ function AuthScreen({ onLogin }) {
         if (USER_DB.find(u=>u.email===form.email.toLowerCase())) { setErrors({ email:"Email already registered" }); return; }
         const newUser = { name:form.name.trim(), email:form.email.toLowerCase(), password:form.password, phone:form.phone, role };
         USER_DB.push(newUser);
-        setSuccess("Account created! Signing you in…");
-        setTimeout(()=>onLogin(newUser), 900);
+        setSuccess("Account created! Redirecting to sign in…");
+        setTimeout(() => {
+          setMode("login");
+          setErrors({});
+          setSuccess("");
+          setForm(f => ({ ...f, password: "", confirm: "" }));
+        }, 1500);
       }
     }
   };
@@ -414,7 +425,7 @@ function AuthScreen({ onLogin }) {
 }
 
 // ─── STUDENT APP ───────────────────────────────────────────
-function StudentApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
+function StudentApp({ user, onLogout, orders, setOrders, menu, addToast, onMutate, broadcast }) {
   const [page, setPage] = useState("menu");
   const [cart, setCart] = useState([]);
   const [category, setCategory] = useState("All");
@@ -450,6 +461,7 @@ function StudentApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
     };
     onMutate(); // pause poll so local order shows immediately
     setOrders(prev => [order, ...prev]);
+    broadcast({ type: "NEW_ORDER", payload: order });
     setCart([]); setShowCheckout(false); setPickupTime(""); setPage("orders");
     addToast(`🎉 Order #${order.id} placed! Token: ${order.token}`, "success");
     fetch(`${API}/api/orders`, {
@@ -463,7 +475,7 @@ function StudentApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
     }).catch(()=>{});
   };
 
-  const filtered = MENU.filter(item => {
+  const filtered = menu.filter(item => {
     const catOk = category==="All" || item.category===category;
     const searchOk = item.name.toLowerCase().includes(search.toLowerCase());
     const vegOk = filter==="all" || (filter==="veg" && item.veg) || (filter==="nonveg" && !item.veg);
@@ -682,6 +694,7 @@ function StudentApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
                             onClick={()=>{
                               onMutate();
                               setOrders(prev=>prev.map(o=>o.id===order.id?{...o,status:"COMPLETED"}:o));
+                              broadcast({ type: "ORDER_STATUS", payload: { id: order.id, status: "COMPLETED" } });
                               fetch(`${API}/api/orders/${order.id}/status`,{
                                 method:"PATCH", headers:{"Content-Type":"application/json"},
                                 body: JSON.stringify({status:"COMPLETED"})
@@ -768,9 +781,8 @@ function StudentApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
 }
 
 // ─── ADMIN / STAFF APP ─────────────────────────────────────
-function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
+function AdminApp({ user, onLogout, orders, setOrders, menu, setMenu, addToast, onMutate, broadcast }) {
   const [page, setPage] = useState("orders");
-  const [menu, setMenu] = useState(MENU.map(m=>({...m})));
   const [editItem, setEditItem] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newItem, setNewItem] = useState({ name:"", category:"Snacks", price:"", qty:"", veg:true, emoji:"🍽️", desc:"", prep:5 });
@@ -785,6 +797,7 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
 
     onMutate();                        // pause poll for 5s
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: next } : o));
+    broadcast({ type: "ORDER_STATUS", payload: { id: orderId, status: next } });
     addToast(`Order #${orderId} → ${next}`, "info");
 
     fetch(`${API}/api/orders/${orderId}/status`, {
@@ -797,6 +810,7 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
   const cancelOrder = (orderId) => {
     onMutate();
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: "CANCELLED" } : o));
+    broadcast({ type: "ORDER_STATUS", payload: { id: orderId, status: "CANCELLED" } });
     addToast("Order cancelled", "error");
     fetch(`${API}/api/orders/${orderId}/status`, {
       method: "PATCH",
@@ -807,7 +821,9 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
 
   const saveItem = () => {
     if (editItem) {
-      setMenu(prev=>prev.map(m=>m.id===editItem.id?editItem:m));
+      const nextMenu = menu.map(m=>m.id===editItem.id?editItem:m);
+      setMenu(nextMenu);
+      broadcast({ type: "MENU_UPDATE", payload: nextMenu });
       setEditItem(null);
       addToast("Item updated", "success");
       fetch(`${API}/api/menu/${editItem.id}`,{
@@ -815,20 +831,35 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
         body: JSON.stringify({...editItem, description:editItem.desc})
       }).catch(()=>{});
     } else {
-      const item = {...newItem, id: Date.now(), price:+newItem.price, qty:+newItem.qty, rating:4.0};
-      setMenu(prev=>[...prev,item]);
+      const tempId = Date.now();
+      const item = {...newItem, id: tempId, price:+newItem.price, qty:+newItem.qty, rating:4.0};
+      const nextMenu = [...menu,item];
+      setMenu(nextMenu);
+      broadcast({ type: "MENU_UPDATE", payload: nextMenu });
       setShowAdd(false);
       setNewItem({ name:"",category:"Snacks",price:"",qty:"",veg:true,emoji:"🍽️",desc:"",prep:5 });
       addToast("Item added to menu", "success");
       fetch(`${API}/api/menu`,{
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({...item, description:item.desc})
+      })
+      .then(r=>r.json())
+      .then(data => {
+        if (data.success && data.id) {
+           setMenu(prev => {
+             const updated = prev.map(m => m.id === tempId ? { ...m, id: data.id } : m);
+             broadcast({ type: "MENU_UPDATE", payload: updated });
+             return updated;
+           });
+        }
       }).catch(()=>{});
     }
   };
 
   const deleteItem = (id) => {
-    setMenu(prev=>prev.filter(m=>m.id!==id));
+    const nextMenu = menu.filter(m=>m.id!==id);
+    setMenu(nextMenu);
+    broadcast({ type: "MENU_UPDATE", payload: nextMenu });
     addToast("Item removed", "error");
     fetch(`${API}/api/menu/${id}`,{ method:"DELETE" }).catch(()=>{});
   };
@@ -1114,13 +1145,17 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <button className="qty-btn" onClick={()=>{
                             const newQty = Math.max(0, item.qty-10);
-                            setMenu(prev=>prev.map(m=>m.id===item.id?{...m,qty:newQty}:m));
+                            const nextMenu = menu.map(m=>m.id===item.id?{...m,qty:newQty}:m);
+                            setMenu(nextMenu);
+                            broadcast({ type: "MENU_UPDATE", payload: nextMenu });
                             addToast(`-10 ${item.name}`,"warning");
                             fetch(`${API}/api/menu/${item.id}/stock`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({qty:newQty})}).catch(()=>{});
                           }}>-10</button>
                           <button className="qty-btn" style={{background:"var(--green)22",borderColor:"var(--green)44",color:"var(--green)"}} onClick={()=>{
                             const newQty = item.qty+50;
-                            setMenu(prev=>prev.map(m=>m.id===item.id?{...m,qty:newQty}:m));
+                            const nextMenu = menu.map(m=>m.id===item.id?{...m,qty:newQty}:m);
+                            setMenu(nextMenu);
+                            broadcast({ type: "MENU_UPDATE", payload: nextMenu });
                             addToast(`+50 ${item.name} restocked`,"success");
                             fetch(`${API}/api/menu/${item.id}/stock`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({qty:newQty})}).catch(()=>{});
                           }}>+50</button>
@@ -1162,7 +1197,7 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
               <label style={{fontSize:12,color:"var(--muted)",fontWeight:600,marginBottom:5,display:"block"}}>CATEGORY</label>
               <select className="input" value={editItem?editItem.category:newItem.category}
                 onChange={e=>editItem?setEditItem({...editItem,category:e.target.value}):setNewItem({...newItem,category:e.target.value})}>
-                {CATEGORIES.slice(1).map(c=><option key={c}>{c}</option>)}
+                {CATEGORIES.slice(1).map(c=><option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div style={{marginBottom:20}}>
@@ -1190,6 +1225,7 @@ function AdminApp({ user, onLogout, orders, setOrders, addToast, onMutate }) {
 export default function App() {
   const [user, setUser]     = useState(null);
   const [orders, setOrders] = useState([]);
+  const [menu, setMenu]     = useState(MENU.map(m=>({...m})));
   const [toasts, setToasts] = useState([]);
 
   // ── BroadcastChannel: instant cross-tab sync ──────────────
@@ -1200,6 +1236,7 @@ export default function App() {
     try {
       bcRef.current = new BroadcastChannel("quickcanteen_orders");
       bcRef.current.onmessage = ({ data }) => {
+        skipPollRef.current = Date.now(); // Prevent poll mechanism from immediately wiping out broadcasted events
         const { type, payload } = data;
         if (type === "NEW_ORDER") {
           setOrders(prev =>
@@ -1210,6 +1247,9 @@ export default function App() {
           setOrders(prev =>
             prev.map(o => o.id === payload.id ? { ...o, status: payload.status } : o)
           );
+        }
+        if (type === "MENU_UPDATE") {
+          setMenu(payload);
         }
       };
     } catch (e) { /* BroadcastChannel not supported */ }
@@ -1228,7 +1268,14 @@ export default function App() {
 
   const removeToast = (id) => setToasts(prev => prev.filter(t => t.id !== id));
   const handleLogin  = (u) => { setUser(u); addToast(`Welcome back, ${u.name}! 👋`, "success"); };
-  const handleLogout = ()  => { setUser(null); setOrders([]); addToast("Signed out", "info"); };
+  const handleLogout = ()  => { setUser(null); setOrders([]); setMenu(MENU.map(m=>({...m}))); addToast("Signed out", "info"); };
+
+  useEffect(() => {
+    fetch(`${API}/api/menu`)
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data) && data.length > 0) setMenu(data); })
+      .catch(() => {});
+  }, []);
 
   // ── MySQL poll (backup sync, every 5s) ──────────────────
   useEffect(() => {
@@ -1280,10 +1327,10 @@ export default function App() {
       {!user && <AuthScreen onLogin={handleLogin}/>}
       {user && user.role === "student"
         && <StudentApp user={user} onLogout={handleLogout} orders={orders}
-             setOrders={setOrders} addToast={addToast} onMutate={onMutate} broadcast={broadcast}/>}
+             setOrders={setOrders} menu={menu} addToast={addToast} onMutate={onMutate} broadcast={broadcast}/>}
       {user && (user.role === "admin" || user.role === "staff")
         && <AdminApp user={user} onLogout={handleLogout} orders={orders}
-             setOrders={setOrders} addToast={addToast} onMutate={onMutate} broadcast={broadcast}/>}
+             setOrders={setOrders} menu={menu} setMenu={setMenu} addToast={addToast} onMutate={onMutate} broadcast={broadcast}/>}
 
       {/* Toasts */}
       <div style={{position:"fixed",bottom:24,right:24,zIndex:9999,display:"flex",flexDirection:"column",gap:8,alignItems:"flex-end"}}>
